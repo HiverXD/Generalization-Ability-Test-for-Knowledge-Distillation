@@ -5,7 +5,6 @@ import torchvision
 import torchvision.transforms as transforms
 from tqdm import tqdm
 
-
 class MNISTDataManager:
     """Data management class"""
     
@@ -26,7 +25,7 @@ class MNISTDataManager:
         
         # dataloader
         self.train_loader = DataLoader(
-            self.train_dataset, batch_size=batch_size, shuffle=True
+            self.train_dataset, batch_size=batch_size, shuffle=False
         )
         self.test_loader = DataLoader(
             self.test_dataset, batch_size=batch_size, shuffle=False
@@ -90,3 +89,27 @@ class MNISTDataManager:
         filtered_soft_targets = torch.stack(filtered_soft_targets)
         print(f"Filtered soft targets shape: {filtered_soft_targets.shape}")
         return filtered_soft_targets
+    
+    def create_kd_dataset_without_label(self, soft_targets, exclude_label=3):
+        train_data_filtered = []
+        train_labels_filtered = []
+        soft_targets_filtered = []
+        
+        for i, (data, label) in enumerate(self.train_dataset):
+            if label != exclude_label:
+                train_data_filtered.append(data)
+                train_labels_filtered.append(label)
+                soft_targets_filtered.append(soft_targets[i])
+        
+        train_data_filtered = torch.stack(train_data_filtered)
+        train_labels_filtered = torch.tensor(train_labels_filtered)
+        soft_targets_filtered = torch.stack(soft_targets_filtered)
+        
+        print(f"Original dataset size: {len(self.train_dataset)}")
+        print(f"KD dataset size (without label {exclude_label}): {len(train_data_filtered)}")
+        print(f"KD soft targets shape: {soft_targets_filtered.shape}")
+        
+        kd_dataset = TensorDataset(train_data_filtered, train_labels_filtered, soft_targets_filtered)
+        kd_loader = DataLoader(kd_dataset, batch_size=self.batch_size, shuffle=True)
+        
+        return kd_loader, train_data_filtered, train_labels_filtered, soft_targets_filtered

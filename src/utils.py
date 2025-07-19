@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -60,10 +60,10 @@ class Trainer:
             
         
         return history
-    
+
     def train_with_kd(self, student_model, train_loader, test_loader, soft_targets, 
-                      temperature=8, alpha=0.7, lr=0.001, epochs=10):
-        """Knowledge Distillation 학습"""
+                      temperature=4, alpha=0.9, lr=0.001, epochs=10):
+        """기존 방식 - 전체 데이터셋용"""
         student_model.to(self.device)
         criterion_hard = nn.CrossEntropyLoss()
         criterion_soft = nn.KLDivLoss(reduction='batchmean')
@@ -76,7 +76,8 @@ class Trainer:
             'val_acc': []
         }
         
-        for epoch in tqdm(range(epochs)):
+        for epoch in range(epochs):
+            # 학습 단계
             student_model.train()
             train_loss = 0.0
             train_correct = 0
@@ -86,7 +87,7 @@ class Trainer:
             for batch_idx, (data, target) in enumerate(progress_bar):
                 data, target = data.to(self.device), target.to(self.device)
                 
-                # load soft target wrt current batch
+                # 기존 배치 인덱싱 방식 유지
                 batch_start = batch_idx * train_loader.batch_size
                 batch_end = min(batch_start + train_loader.batch_size, len(soft_targets))
                 soft_target_batch = soft_targets[batch_start:batch_end].to(self.device)
@@ -116,15 +117,85 @@ class Trainer:
                     'Acc': f'{100.*train_correct/train_total:.2f}%'
                 })
             
-            # validation
+            # 검증 단계
             val_loss, val_acc = self.evaluate(student_model, test_loader)
             
-            # history
+            # 히스토리 저장
             history['train_loss'].append(train_loss / len(train_loader))
             history['train_acc'].append(100. * train_correct / train_total)
             history['val_loss'].append(val_loss)
             history['val_acc'].append(val_acc)
             
+            print(f'KD Epoch {epoch+1}: Train Loss: {history["train_loss"][-1]:.4f}, '
+                  f'Train Acc: {history["train_acc"][-1]:.2f}%, '
+                  f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
+        
+        return history
+    
+    def train_with_kd_integrated(self, student_model, kd_loader, test_loader,
+                               temperature=4, alpha=0.9, lr=0.001, epochs=10):
+        """통합 데이터셋용 - No 3 데이터용"""
+        student_model.to(self.device)
+        criterion_hard = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(student_model.parameters(), lr=lr)
+        
+        history = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': []
+        }
+        
+        for epoch in range(epochs):
+            # 학습 단계
+            student_model.train()
+            train_loss = 0.0
+            train_correct = 0
+            train_total = 0
+            
+            progress_bar = tqdm(kd_loader, desc=f'KD Integrated Epoch {epoch+1}/{epochs}')
+            for data, target, soft_target in progress_bar:  # 자동 매칭
+                data = data.to(self.device)
+                target = target.to(self.device)
+                soft_target = soft_target.to(self.device)
+                
+                optimizer.zero_grad()
+                student_output = student_model(data)
+                
+                # Hard target loss
+                hard_loss = criterion_hard(student_output, target)
+                
+                # Soft target loss (올바른 계산)
+                student_soft = F.log_softmax(student_output / temperature, dim=1)
+                soft_loss = F.kl_div(student_soft, soft_target, reduction='batchmean')
+                
+                # Combined loss
+                loss = alpha * soft_loss + (1 - alpha) * hard_loss
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item()
+                _, predicted = torch.max(student_output.data, 1)
+                train_total += target.size(0)
+                train_correct += (predicted == target).sum().item()
+                
+                progress_bar.set_postfix({
+                    'Loss': f'{train_loss/(len(kd_loader)):.4f}',
+                    'Acc': f'{100.*train_correct/train_total:.2f}%'
+                })
+            
+            # 검증 단계
+            val_loss, val_acc = self.evaluate(student_model, test_loader)
+            
+            # 히스토리 저장
+            history['train_loss'].append(train_loss / len(kd_loader))
+            history['train_acc'].append(100. * train_correct / train_total)
+            history['val_loss'].append(val_loss)
+            history['val_acc'].append(val_acc)
+            
+            print(f'KD Integrated Epoch {epoch+1}: Train Loss: {history["train_loss"][-1]:.4f}, '
+                  f'Train Acc: {history["train_acc"][-1]:.2f}%, '
+                  f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
         
         return history
     
@@ -190,8 +261,8 @@ class Trainer:
         
         # Loss
         plt.subplot(1, 2, 1)
-        plt.plot(epochs, history['train_loss'], 'b-', label='Train Loss')
-        plt.plot(epochs, history['val_loss'], 'r-', label='Validation Loss')
+        plt.plot(epochs, history['train_loss'], label='Train Loss')
+        plt.plot(epochs, history['val_loss'], label='Validation Loss')
         plt.title(f'{title} - Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
@@ -200,8 +271,8 @@ class Trainer:
         
         # Accuracy
         plt.subplot(1, 2, 2)
-        plt.plot(epochs, history['train_acc'], 'b-', label='Train Accuracy')
-        plt.plot(epochs, history['val_acc'], 'r-', label='Validation Accuracy')
+        plt.plot(epochs, history['train_acc'], label='Train Accuracy')
+        plt.plot(epochs, history['val_acc'], label='Validation Accuracy')
         plt.title(f'{title} - Accuracy')
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy (%)')
@@ -216,7 +287,7 @@ class Trainer:
         plt.figure(figsize=(15, 5))
         
         # loss
-        plt.subplot(1, 3, 1)
+        plt.subplot(1, 2, 1)
         for history, name in zip(histories, model_names):
             epochs = range(1, len(history['train_loss']) + 1)
             plt.plot(epochs, history['train_loss'], label=name)
@@ -227,7 +298,7 @@ class Trainer:
         plt.grid(True)
         
         # acc
-        plt.subplot(1, 3, 2)
+        plt.subplot(1, 2, 2)
         for history, name in zip(histories, model_names):
             epochs = range(1, len(history['val_acc']) + 1)
             plt.plot(epochs, history['val_acc'], label=name)
@@ -236,19 +307,6 @@ class Trainer:
         plt.ylabel('Accuracy (%)')
         plt.legend()
         plt.grid(True)
-        
-        # acc
-        plt.subplot(1, 3, 3)
-        colors = ['blue', 'orange', 'green', 'red']
-        bars = plt.bar(model_names, accuracies, color=colors[:len(model_names)])
-        plt.title('Final Test Accuracy Comparison')
-        plt.ylabel('Accuracy (%)')
-        plt.ylim(0, 100)
-        
-        # labeling
-        for bar, acc in zip(bars, accuracies):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
-                     f'{acc:.1f}%', ha='center', va='bottom')
         
         plt.tight_layout()
         plt.show()
